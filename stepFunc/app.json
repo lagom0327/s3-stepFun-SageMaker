@@ -1,0 +1,150 @@
+{
+    "StartAt": "get file name",
+    "States": {
+      "get file name": {
+        "Type": "Pass",
+        "Next": "FileName formate"
+      },
+      "FileName formate": {
+        "Type": "Choice",
+        "Choices": [
+          {
+            "Not": {
+              "Variable": "$.object.key",
+              "StringMatches": "*_*.csv"
+            },
+            "Next": "Fail"
+          },
+          {
+            "Variable": "$.object.key",
+            "StringMatches": "*_*.csv",
+            "Next": "Lambda Invoke"
+          }
+        ],
+        "Default": "Fail"
+      },
+      "Lambda Invoke": {
+        "Type": "Task",
+        "Resource": "arn:aws:states:::lambda:invoke",
+        "Parameters": {
+          "FunctionName": "arn:aws:lambda:ap-northeast-1:{accound-id}:function:GetID:$LATEST",
+          "Payload": {
+            "key1": "sampleValue1",
+            "object.$": "$.object.key"
+          }
+        },
+        "Retry": [
+          {
+            "ErrorEquals": [
+              "Lambda.ServiceException",
+              "Lambda.AWSLambdaException",
+              "Lambda.SdkClientException"
+            ],
+            "IntervalSeconds": 2,
+            "MaxAttempts": 6,
+            "BackoffRate": 2
+          }
+        ],
+        "Next": "IsBatch_idNumber",
+        "ResultPath": "$.batch_id",
+        "ResultSelector": {
+          "value.$": "$.Payload.body.batch_id"
+        }
+      },
+      "IsBatch_idNumber": {
+        "Type": "Choice",
+        "Choices": [
+          {
+            "Not": {
+              "Variable": "$.batch_id.value",
+              "IsNumeric": true
+            },
+            "Next": "Fail"
+          }
+        ],
+        "Default": "Standardization: x' = (x - x̄) / σ"
+      },
+      "Fail": {
+        "Type": "Fail",
+        "Cause": "檔名不符合格式",
+        "Error": "$.object.key"
+      },
+      "Standardization: x' = (x - x̄) / σ": {
+        "Resource": "arn:aws:states:::sagemaker:createProcessingJob.sync",
+        "Parameters": {
+          "ProcessingResources": {
+            "ClusterConfig": {
+              "InstanceCount": 1,
+              "InstanceType": "ml.t3.medium",
+              "VolumeSizeInGB": 1
+            }
+          },
+          "ProcessingInputs": [
+            {
+              "InputName": "input-1",
+              "S3Input": {
+                "S3Uri.$": "States.Format('s3://{}/{}', $.bucket.name, $.object.key)",
+                "LocalPath": "/opt/ml/processing/input",
+                "S3DataType": "S3Prefix",
+                "S3InputMode": "File",
+                "S3DataDistributionType": "FullyReplicated",
+                "S3CompressionType": "None"
+              }
+            },
+            {
+              "InputName": "code",
+              "S3Input": {
+                "S3Uri.$": "States.Format('s3://{}/code/app.py', $.bucket.name)",
+                "LocalPath": "/opt/ml/processing/input/code",
+                "S3DataType": "S3Prefix",
+                "S3InputMode": "File",
+                "S3DataDistributionType": "FullyReplicated",
+                "S3CompressionType": "None"
+              }
+            }
+          ],
+          "ProcessingOutputConfig": {
+            "Outputs": [
+              {
+                "OutputName": "train_data",
+                "S3Output": {
+                  "S3Uri.$": "States.Format('s3://{}/prediction-data/{}', $.bucket.name, $.batch_id)",
+                  "LocalPath": "/opt/ml/processing/output/train",
+                  "S3UploadMode": "EndOfJob"
+                }
+              }
+            ]
+          },
+          "AppSpecification": {
+            "ImageUri": "{accound-id}.dkr.ecr.us-east-1.amazonaws.com/image-name",
+            "ContainerEntrypoint": [
+              "python3",
+              "/opt/ml/processing/input/code/app.py"
+            ]
+          },
+          "StoppingCondition": {
+            "MaxRuntimeInSeconds": 300
+          },
+          "RoleArn": "arn:aws:iam::{accound-id}:role/SageMakerAPIExecutionRole",
+          "ProcessingJobName.$": "States.Format('project-name-{}-{}', $.batch_id.value, $$.Execution.Name)"
+        },
+        "Type": "Task",
+        "Catch": [
+          {
+            "ErrorEquals": [
+              "States.ALL"
+            ],
+            "Next": "SageMaker error",
+            "ResultPath": "$.result.error"
+          }
+        ],
+        "Next": "Success"
+      },
+      "SageMaker error": {
+        "Type": "Fail"
+      },
+      "Success": {
+        "Type": "Succeed"
+      }
+    }
+  }
